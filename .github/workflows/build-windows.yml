@@ -23,23 +23,49 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', '**/*.py') }}
+          key: ${{ runner.os }}-pip-v2-${{ hashFiles('**/*.py') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-pip-v2-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+
+          :: 基础工具
           pip install pyinstaller
+
+          :: 图像处理
           pip install opencv-python==4.11.0.86
           pip install numpy==1.26.4
           pip install pillow
+
+          :: 人脸检测 / 分割
           pip install mediapipe==0.10.21
-          pip install paddlepaddle==2.6.2
+
+          :: PaddleOCR（对齐 Mac：用 paddlepaddle 3.x，避免 protobuf 冲突）
+          pip install paddlepaddle==3.3.1
           pip install paddleocr==2.10.0
+
+          :: InsightFace（onnx 会拉高 protobuf，装完要回滚）
           pip install insightface==0.7.3
           pip install onnxruntime==1.19.2
+
+          :: 网络
           pip install requests urllib3
+
+          :: 最后强制统一 protobuf 到 mediapipe 兼容区间（4.25.3 ~ 5）
+          pip install "protobuf>=4.25.3,<5"
+
+          :: 打印关键版本用于排查
+          pip list | findstr /I "protobuf paddle mediapipe insightface onnx"
+
+      - name: Verify imports
+        run: |
+          python -c "import cv2, mediapipe, numpy; print('cv2', cv2.__version__); print('numpy', numpy.__version__)"
+          python -c "import paddle; print('paddle', paddle.__version__)"
+          python -c "import paddleocr; print('paddleocr OK')"
+          python -c "import insightface; print('insightface OK')"
+          python -c "import onnxruntime; print('onnxruntime', onnxruntime.__version__)"
 
       - name: Download InsightFace buffalo_l model
         shell: pwsh
@@ -54,7 +80,7 @@ jobs:
           foreach ($u in $urls) {
             Write-Host "尝试下载: $u"
             try {
-              Invoke-WebRequest -Uri $u -OutFile models\buffalo_l.zip -TimeoutSec 180
+              Invoke-WebRequest -Uri $u -OutFile models\buffalo_l.zip -TimeoutSec 300
               if ((Get-Item models\buffalo_l.zip).Length -gt 1000000) {
                 $ok = $true
                 break
@@ -68,12 +94,13 @@ jobs:
           Remove-Item models\buffalo_l.zip
           Get-ChildItem models\buffalo_l
 
-      - name: Download PaddleOCR models (offline pack)
+      - name: Pre-download PaddleOCR models (best-effort)
+        continue-on-error: true
         shell: pwsh
         run: |
-          # 预下载 PaddleOCR 检测/识别/方向分类模型，随 exe 一起打包，避免首次运行联网
+          # 只是尝试把模型下到用户目录，失败不影响 exe 打包
+          # exe 首次运行时仍可联网自动下载
           python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)"
-          Write-Host "PaddleOCR 模型已缓存到用户目录"
 
       - name: Build with PyInstaller
         run: |
@@ -88,6 +115,7 @@ jobs:
             --collect-all lmdb ^
             --collect-all insightface ^
             --collect-all onnxruntime ^
+            --collect-all mediapipe ^
             --hidden-import=mediapipe ^
             --hidden-import=cv2 ^
             --hidden-import=PIL ^
@@ -99,6 +127,7 @@ jobs:
             --hidden-import=charset_normalizer ^
             --hidden-import=idna ^
             --hidden-import=certifi ^
+            --hidden-import=google.protobuf ^
             main.py
 
       - name: Upload artifact
