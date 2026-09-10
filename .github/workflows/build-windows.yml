@@ -105,31 +105,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --windowed ^
-            --name "PhotoIDTool" ^
-            --add-data "models;models" ^
-            --collect-all paddleocr ^
-            --collect-all paddle ^
-            --collect-all pyclipper ^
-            --collect-all skimage ^
-            --collect-all imgaug ^
-            --collect-all lmdb ^
-            --collect-all insightface ^
-            --collect-all onnxruntime ^
-            --collect-all mediapipe ^
-            --hidden-import=mediapipe ^
-            --hidden-import=cv2 ^
-            --hidden-import=PIL ^
-            --hidden-import=PIL._tkinter_finder ^
-            --hidden-import=scipy.special ^
-            --hidden-import=scipy._lib.messagestream ^
-            --hidden-import=urllib3 ^
-            --hidden-import=requests ^
-            --hidden-import=charset_normalizer ^
-            --hidden-import=idna ^
-            --hidden-import=certifi ^
-            --hidden-import=google.protobuf ^
-            main.py
+          pyinstaller --onefile --windowed --name "PhotoIDTool" --add-data "models;models" --collect-all paddleocr --collect-all paddle --collect-all pyclipper --collect-all skimage --collect-all imgaug --collect-all lmdb --collect-all insightface --collect-all onnxruntime --collect-all mediapipe --hidden-import=mediapipe --hidden-import=cv2 --hidden-import=PIL --hidden-import=PIL._tkinter_finder --hidden-import=scipy.special --hidden-import=scipy._lib.messagestream --hidden-import=urllib3 --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=idna --hidden-import=certifi --hidden-import=google.protobuf main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
