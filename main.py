@@ -16,11 +16,31 @@ import logging
 import time
 import sys
 
-# ========== 日志配置：输出到控制台 ==========
+# ========== 修复 PyInstaller --windowed 模式下 sys.stdout/stderr 为 None ==========
+# 打包成 exe 且无控制台时，sys.stdout/stderr 会是 None，PaddleOCR 写日志会崩
+if getattr(sys, 'frozen', False):
+    _log_dir = os.path.join(os.path.expanduser("~"), ".photo_id_tool")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, "runtime.log")
+
+    if sys.stdout is None:
+        sys.stdout = open(_log_path, 'a', encoding='utf-8', buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(_log_path, 'a', encoding='utf-8', buffering=1)
+
+# ========== 日志配置：控制台 + 文件双输出 ==========
+_log_handlers = [logging.StreamHandler()]
+
+# 打包后额外把日志写到文件，方便排查
+if getattr(sys, 'frozen', False):
+    _fh = logging.FileHandler(_log_path, encoding='utf-8')
+    _log_handlers.append(_fh)
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
+    handlers=_log_handlers,
     force=True,
 )
 log = logging.getLogger("PhotoIDTool")
@@ -82,6 +102,36 @@ def load_config():
             return json.load(f)
     except Exception:
         return {}
+
+def ensure_paddle_models():
+    """
+    打包运行时：把 exe 内置的 PaddleOCR 模型复制到用户目录 ~/.paddleocr
+    这样 PaddleOCR 按默认路径就能找到模型，不用改它的初始化代码
+    """
+    if not getattr(sys, "frozen", False) or not hasattr(sys, "_MEIPASS"):
+        return  # 源码运行，不动
+    import shutil
+    src = os.path.join(sys._MEIPASS, "paddleocr_models")
+    dst = os.path.expanduser("~/.paddleocr")
+    if not os.path.isdir(src):
+        log.warning(f"[ensure_paddle_models] 内置模型目录不存在：{src}")
+        return
+    # 如果目标已经有模型（且非空），就不重复拷贝
+    if os.path.isdir(dst) and any(os.scandir(dst)):
+        log.info(f"[ensure_paddle_models] 用户目录已有模型，跳过拷贝：{dst}")
+        return
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for item in os.listdir(src):
+            s = os.path.join(src, item)
+            d = os.path.join(dst, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        log.info(f"[ensure_paddle_models] 模型已复制到：{dst}")
+    except Exception as e:
+        log.exception(f"[ensure_paddle_models] 拷贝失败：{e}")
 
 
 def save_config(cfg):
@@ -522,6 +572,7 @@ class PhotoIDApp:
         self._build_ui()
         self._restore_config()
         self._poll_queue()
+        ensure_paddle_models() 
         self._init_ocr_async()
         self._init_face_comparator_async()
 
