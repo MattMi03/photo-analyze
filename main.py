@@ -301,7 +301,6 @@ class ApiClient:
 
 
 # ========== 人脸相似度比对（本地 InsightFace） ==========
-# ========== 人脸相似度比对（本地 InsightFace） ==========
 class FaceComparator:
     """基于 InsightFace 的本地人脸相似度比对
     优先从 exe 内置目录 / 项目目录 / 用户目录查找模型，不再联网下载。
@@ -412,6 +411,7 @@ class FaceComparator:
 
         sim = float(np.dot(e1, e2))
         return sim, "ok"
+
 
 # ========== 登录弹窗 ==========
 class LoginDialog(tk.Toplevel):
@@ -530,6 +530,187 @@ class LoginDialog(tk.Toplevel):
         self.login_btn.config(state="normal", text="登录")
 
 
+# ========== 摄像头采集对话框 ==========
+class CameraDialog(tk.Toplevel):
+    """可选的摄像头采集对话框：用于拍摄人脸或身份证照片
+
+    - 预览镜像显示（照着镜子拍）
+    - 空格 / 回车 / 点击按钮 拍照（保存未镜像原图）
+    - Esc / 取消 / 关闭窗口 退出
+    - 拍照后通过 on_capture(frame_bgr) 回调把 BGR ndarray 交给主程序
+    """
+
+    def __init__(self, app, title, on_capture, hint="", on_close=None):
+        super().__init__(app.root)
+        self.app = app
+        self.on_capture = on_capture
+        self.on_close = on_close
+        self.cap = None
+        self.running = True
+        self._last_frame = None       # 保存未镜像的原始帧
+        self._camera_index = 0
+
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(app.root)
+        self.grab_set()
+
+        if hint:
+            ttk.Label(
+                self, text=hint, foreground="#333",
+                font=("Helvetica", 11), justify="center"
+            ).pack(pady=(12, 4), padx=12)
+
+        # 视频画面
+        self.video_label = tk.Label(self, bg="black", width=80, height=30)
+        self.video_label.pack(padx=12, pady=6)
+
+        # 状态提示
+        self.status_label = ttk.Label(
+            self, text="正在打开摄像头...", foreground="gray"
+        )
+        self.status_label.pack(pady=2)
+
+        # 按钮区
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=10)
+        self.capture_btn = ttk.Button(
+            btn_frame, text="拍照（空格）", command=self._capture, width=16,
+            state="disabled"
+        )
+        self.capture_btn.pack(side="left", padx=6)
+        ttk.Button(
+            btn_frame, text="取消（Esc）", command=self._close, width=14
+        ).pack(side="left", padx=6)
+
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<space>",  lambda e: self._capture())
+        self.bind("<Return>", lambda e: self._capture())
+        self.bind("<Escape>", lambda e: self._close())
+
+        # 居中到主窗口
+        self.update_idletasks()
+        mx, my = app.root.winfo_rootx(), app.root.winfo_rooty()
+        mw, mh = app.root.winfo_width(), app.root.winfo_height()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(
+            f"+{mx + max(0, (mw - w) // 2)}+{my + max(0, (mh - h) // 2)}"
+        )
+
+        # 稍后再打开摄像头，避免 UI 尚未显示时卡住
+        self.after(50, self._open_camera)
+
+    # ---------- 摄像头生命周期 ----------
+    def _open_camera(self):
+        if not self.running:
+            return
+
+        last_err = None
+        # Windows 下 DSHOW 启动最快；其他平台会自然 fallback
+        for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+            try:
+                cap = cv2.VideoCapture(self._camera_index, backend)
+                if cap.isOpened():
+                    ok, _ = cap.read()
+                    if ok:
+                        self.cap = cap
+                        break
+                    cap.release()
+            except Exception as e:
+                last_err = e
+                continue
+
+        if self.cap is None:
+            msg = "无法打开摄像头，请检查设备连接或驱动"
+            if last_err:
+                msg += f"\n（{last_err}）"
+            log.error(f"[CameraDialog] {msg}")
+            self.status_label.config(text=msg, foreground="red")
+            messagebox.showerror("摄像头错误", msg, parent=self)
+            return
+
+        # 尝试设置分辨率 & 减少缓冲
+        try:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        log.info("[CameraDialog] 摄像头已打开")
+        self.status_label.config(
+            text="摄像头就绪，按空格或点击“拍照”", foreground="green"
+        )
+        self.capture_btn.config(state="normal")
+        self._update_frame()
+
+    def _update_frame(self):
+        if not self.running or self.cap is None:
+            return
+        try:
+            ret, frame = self.cap.read()
+        except Exception:
+            ret, frame = False, None
+
+        if ret and frame is not None:
+            # 保存未镜像的原始帧（用于最终输出）
+            self._last_frame = frame.copy()
+
+            # 预览镜像显示（像照镜子一样自然）
+            preview_frame = cv2.flip(frame, 1)
+
+            # 缩放到预览尺寸
+            h, w = preview_frame.shape[:2]
+            max_w, max_h = 720, 540
+            scale = min(max_w / w, max_h / h, 1.0)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            preview = cv2.resize(
+                preview_frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+            )
+            rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb)
+            photo = ImageTk.PhotoImage(img)
+            self.video_label.config(image=photo, width=new_w, height=new_h)
+            self.video_label.image = photo
+
+        self.after(33, self._update_frame)   # ~30 FPS
+
+    # ---------- 拍照 ----------
+    def _capture(self):
+        if self._last_frame is None or self.cap is None:
+            return
+        frame = self._last_frame.copy()
+        callback = self.on_capture
+        self._close()
+        try:
+            callback(frame)
+        except Exception as e:
+            log.exception("[CameraDialog] 拍照回调异常")
+            messagebox.showerror("错误", f"处理拍照结果失败：{e}")
+
+    def _close(self):
+        if not self.running:
+            return
+        self.running = False
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        cb = self.on_close
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
+
+
 class PhotoIDApp:
     def __init__(self, root):
         self.root = root
@@ -558,6 +739,7 @@ class PhotoIDApp:
 
         self.api_client = ApiClient()
         self.login_dialog = None
+        self.camera_dialog = None
 
         self.identity_sfzjh = None
         self.identity_ksbs = None
@@ -572,7 +754,7 @@ class PhotoIDApp:
         self._build_ui()
         self._restore_config()
         self._poll_queue()
-        ensure_paddle_models() 
+        ensure_paddle_models()
         self._init_ocr_async()
         self._init_face_comparator_async()
 
@@ -606,6 +788,9 @@ class PhotoIDApp:
         self.face_label = ttk.Label(row1, text="未选择", foreground="gray", anchor="w")
         self.face_label.pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(row1, text="选择文件", command=self.select_face).pack(side="right")
+        ttk.Button(
+            row1, text="拍照", command=self.open_camera_for_face, width=8
+        ).pack(side="right", padx=(0, 5))
 
         row2 = ttk.Frame(file_frame)
         row2.pack(fill="x", pady=3)
@@ -613,6 +798,9 @@ class PhotoIDApp:
         self.id_label = ttk.Label(row2, text="未选择（可选，选后自动识别）", foreground="gray", anchor="w")
         self.id_label.pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(row2, text="选择文件", command=self.select_id).pack(side="right")
+        ttk.Button(
+            row2, text="拍照", command=self.open_camera_for_id, width=8
+        ).pack(side="right", padx=(0, 5))
 
         # ---------- 参数 ----------
         opt_frame = ttk.LabelFrame(self.root, text="证件照参数", padding=8)
@@ -1153,7 +1341,7 @@ class PhotoIDApp:
     def _init_face_comparator_async(self):
         threading.Thread(target=self.face_comparator.init, daemon=True).start()
 
-    # ==================== 文件选择 ====================
+    # ==================== 文件选择 & 摄像头采集 ====================
     def _pick_file(self, title):
         return filedialog.askopenfilename(
             title=title,
@@ -1181,12 +1369,7 @@ class PhotoIDApp:
         if not ok:
             self.show_error(err)
             return
-        self.face_path = path
-        self.face_label.config(text=path, foreground="black")
-        self._show_preview_file(path, self.face_preview)
-        self._show_face_mode()
-        self._invalidate_face_result()
-        self._auto_compare_faces()
+        self._apply_face_photo(path)
 
     def select_id(self):
         path = self._pick_file("请选择身份证照片")
@@ -1197,6 +1380,80 @@ class PhotoIDApp:
         if not ok:
             self.show_error(err)
             return
+        self._apply_id_photo(path)
+
+    # ---------- 摄像头入口 ----------
+    def open_camera_for_face(self):
+        self._open_camera(
+            title="摄像头采集 - 人脸照片",
+            hint="请正对镜头，露出五官，光线均匀，画面稳定后再拍照",
+            kind="face",
+        )
+
+    def open_camera_for_id(self):
+        self._open_camera(
+            title="摄像头采集 - 身份证照片",
+            hint="请将身份证平放于桌面或手持对准镜头\n保证四角完整、无遮挡、无反光、文字清晰",
+            kind="id",
+        )
+
+    def _open_camera(self, title, hint, kind):
+        # 已有摄像头窗口时，只置顶，不重复开
+        if self.camera_dialog is not None:
+            try:
+                if self.camera_dialog.winfo_exists():
+                    self.camera_dialog.lift()
+                    self.camera_dialog.focus_set()
+                    return
+            except Exception:
+                pass
+            self.camera_dialog = None
+
+        self.camera_dialog = CameraDialog(
+            self,
+            title=title,
+            hint=hint,
+            on_capture=lambda f: self._on_camera_capture(f, kind),
+            on_close=self._clear_camera_dialog,
+        )
+
+    def _clear_camera_dialog(self):
+        self.camera_dialog = None
+
+    def _on_camera_capture(self, frame_bgr, kind):
+        try:
+            cap_dir = os.path.join(CONFIG_DIR, "captures")
+            os.makedirs(cap_dir, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(cap_dir, f"{kind}_{ts}.jpg")
+
+            ok = cv2.imwrite(
+                path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95]
+            )
+            if not ok:
+                self.show_error("摄像头照片保存失败")
+                return
+            log.info(f"[摄像头] 已保存 {kind} 照片：{path}")
+
+            if kind == "face":
+                self._apply_face_photo(path, source="摄像头")
+            else:
+                self._apply_id_photo(path, source="摄像头")
+        except Exception as e:
+            log.exception("[摄像头] 保存照片失败")
+            self.show_error(f"摄像头照片处理失败：{e}")
+
+    # ---------- 统一应用照片 ----------
+    def _apply_face_photo(self, path, source="文件"):
+        self.face_path = path
+        self.face_label.config(text=path, foreground="black")
+        self._show_preview_file(path, self.face_preview)
+        self._show_face_mode()
+        self._invalidate_face_result()
+        self._auto_compare_faces()
+        self.set_status(f"已载入人脸照片（{source}）：{os.path.basename(path)}")
+
+    def _apply_id_photo(self, path, source="文件"):
         self.id_path = path
         self.id_label.config(text=path, foreground="black")
         self._show_preview_file(path, self.id_preview)
@@ -1210,6 +1467,7 @@ class PhotoIDApp:
         self._update_flow()
         self._auto_recognize_id()
         self._auto_compare_faces()
+        self.set_status(f"已载入身份证照片（{source}）：{os.path.basename(path)}")
 
     def _invalidate_face_result(self):
         self.processed_image = None
@@ -1920,7 +2178,7 @@ class PhotoIDApp:
         fx, fy, fw, fh = face_bbox
 
         if self.segmenter is None:
-            self.segmenter = self.mp_selfie_segmentation.SelfieSegmentation(
+            self.segmenter = mp.mp_selfie_segmentation.SelfieSegmentation(
                 model_selection=1
             )
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
