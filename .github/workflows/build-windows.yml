@@ -118,6 +118,7 @@ jobs:
             pyinstaller --onefile --windowed --name "PhotoIDTool" ^
             --add-data "models;models" ^
             --add-data "paddleocr_models;paddleocr_models" ^
+            --add-data "assets;assets" ^
             --collect-all paddleocr ^
             --collect-all paddle ^
             --collect-all pyclipper ^

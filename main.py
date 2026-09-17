@@ -54,8 +54,50 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ========== 配置持久化目录 ==========
 CONFIG_DIR = os.path.expanduser("~/.photo_id_tool")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-BG_CACHE_FILE = os.path.join(CONFIG_DIR, "bg_cache.jpg")
 COLLECTION_LOG_FILE = os.path.join(CONFIG_DIR, "collection_log.jsonl")
+
+
+def resource_path(*parts):
+    """获取内置资源路径：PyInstaller 打包后从 sys._MEIPASS 查找，源码运行时从脚本目录查找"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, *parts)
+
+
+# 固定背景图（随 app 一起打包，不可更换）
+DEFAULT_BG_IMAGE = resource_path("assets", "default_bg.jpg")
+
+
+def imread_unicode(path, flags=cv2.IMREAD_COLOR):
+    """读取图片：兼容 Windows 下含中文/空格等非 ASCII 字符的路径（cv2.imread 会返回 None）"""
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except (OSError, FileNotFoundError):
+        return None
+    if data.size == 0:
+        return None
+    img = cv2.imdecode(data, flags)
+    if img is not None:
+        return img
+    # 解码失败时兜底英文路径的原生接口
+    if os.path.exists(path):
+        return cv2.imread(path, flags)
+    return None
+
+
+def imwrite_unicode(path, img, params=None):
+    """写入图片：兼容 Windows 下含中文/空格等非 ASCII 字符的路径"""
+    ext = os.path.splitext(path)[1] or ".jpg"
+    try:
+        ok, buf = cv2.imencode(ext, img, params or [])
+        if not ok:
+            return False
+        buf.tofile(path)
+        return True
+    except Exception:
+        return cv2.imwrite(path, img, params or [])
 
 # ========== 云端接口默认配置 ==========
 DEFAULT_API_BASE = "https://111.12.149.164"
@@ -75,9 +117,9 @@ STANDARD_SIZES = {
 }
 
 # ========== 证件照构图参数 ==========
-HEAD_HEIGHT_RATIO = 0.62
-HEAD_WIDTH_RATIO  = 0.55
-FACE_CENTER_Y_RATIO = 0.55
+HEAD_TOP_MARGIN = 0.10        # 头发顶部距照片上边沿（占照片高度比例）
+MAX_HEAD_HEIGHT_RATIO = 0.75  # 含头发头部高度上限（占照片高度），防止近景大脸照被过度放大
+MAX_HEAD_WIDTH_RATIO  = 0.90  # 含头发头部宽度上限（占照片宽度）
 HAIR_WIDTH_FACTOR  = 1.15
 HAIR_HEIGHT_FACTOR = 1.55
 
@@ -720,7 +762,6 @@ class PhotoIDApp:
 
         self.face_path = None
         self.id_path = None
-        self.bg_image_path = None
         self.processed_image = None
         self.face_processed = False
         self.id_info = {}
@@ -817,27 +858,13 @@ class PhotoIDApp:
         size_combo.pack(side="left", padx=5)
         size_combo.bind("<<ComboboxSelected>>", lambda e: self._on_size_change())
 
-        color_row = ttk.Frame(opt_frame)
-        color_row.pack(fill="x", pady=2)
-        ttk.Label(color_row, text="背景：", width=8, anchor="w").pack(side="left")
-        self.bg_var = tk.StringVar(value="white")
-        for text, val in [("白底", "white"), ("蓝底", "blue"), ("红底", "red"), ("自定义图片", "image")]:
-            ttk.Radiobutton(
-                color_row, text=text, value=val, variable=self.bg_var,
-                command=self._on_bg_change
-            ).pack(side="left", padx=6)
-
         bg_row = ttk.Frame(opt_frame)
         bg_row.pack(fill="x", pady=2)
-        ttk.Label(bg_row, text="", width=8).pack(side="left")
-        self.bg_image_label = ttk.Label(
-            bg_row, text="未选择背景图", foreground="gray", anchor="w"
-        )
-        self.bg_image_label.pack(side="left", fill="x", expand=True, padx=5)
-        self.bg_image_btn = ttk.Button(
-            bg_row, text="选择背景图", command=self.select_bg_image, state="disabled"
-        )
-        self.bg_image_btn.pack(side="right")
+        ttk.Label(bg_row, text="背景：", width=8, anchor="w").pack(side="left")
+        ttk.Label(
+            bg_row, text="内置背景图（固定，不可更换）",
+            foreground="gray", anchor="w"
+        ).pack(side="left", padx=5)
 
         # ---------- 采集流程 ----------
         flow_frame = ttk.LabelFrame(
@@ -1086,20 +1113,8 @@ class PhotoIDApp:
         if size_name and size_name in STANDARD_SIZES:
             self.size_var.set(size_name)
 
-        bg_type = self.config.get("bg_type", "white")
-        self.bg_var.set(bg_type)
-        if bg_type == "image":
-            self.bg_image_btn.config(state="normal")
-
-        if bg_type == "image" and os.path.exists(BG_CACHE_FILE):
-            self.bg_image_path = BG_CACHE_FILE
-            self.bg_image_label.config(
-                text=f"已缓存：{BG_CACHE_FILE}", foreground="black"
-            )
-
-    def _save_bg_config(self):
+    def _save_size_config(self):
         self.config["size_name"] = self.size_var.get()
-        self.config["bg_type"] = self.bg_var.get()
         save_config(self.config)
 
     # ==================== 线程通信 ====================
@@ -1359,7 +1374,7 @@ class PhotoIDApp:
             return False, f"路径不存在：{path}"
         if not os.path.isfile(path):
             return False, f"路径不是文件：{path}"
-        img = cv2.imread(path)
+        img = imread_unicode(path)
         if img is None:
             return False, f"无法读取图片：{path}"
         return True, ""
@@ -1431,7 +1446,7 @@ class PhotoIDApp:
             ts = time.strftime("%Y%m%d_%H%M%S")
             path = os.path.join(cap_dir, f"{kind}_{ts}.jpg")
 
-            ok = cv2.imwrite(
+            ok = imwrite_unicode(
                 path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95]
             )
             if not ok:
@@ -1502,30 +1517,6 @@ class PhotoIDApp:
             self.set_status("身份证识别失败")
             self.show_error(f"身份证识别失败：{e}")
 
-    def select_bg_image(self):
-        path = self._pick_file("请选择背景图片")
-        if not path:
-            return
-        path = os.path.normpath(path)
-        ok, err = self._validate_path(path)
-        if not ok:
-            self.show_error(err)
-            return
-
-        try:
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-            img = cv2.imread(path)
-            cv2.imwrite(BG_CACHE_FILE, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            self.bg_image_path = BG_CACHE_FILE
-            self.bg_image_label.config(
-                text=f"已缓存：{BG_CACHE_FILE}", foreground="black"
-            )
-            self.config["bg_type"] = "image"
-            save_config(self.config)
-        except Exception as e:
-            self.show_error(f"背景图保存失败：{e}")
-            return
-
     # ==================== 人脸相似度比对 ====================
     def _auto_compare_faces(self):
         """两张照片都在时自动后台比对"""
@@ -1564,8 +1555,8 @@ class PhotoIDApp:
     def _compare_worker(self):
         sim, msg = None, "比对异常"
         try:
-            img_id = cv2.imread(self.id_path)
-            img_face = cv2.imread(self.face_path)
+            img_id = imread_unicode(self.id_path)
+            img_face = imread_unicode(self.face_path)
             if img_id is None or img_face is None:
                 sim, msg = None, "图片读取失败"
             else:
@@ -1667,27 +1658,8 @@ class PhotoIDApp:
             )
 
     # ==================== 选项 ====================
-    def _get_bg_color(self):
-        mapping = {
-            "white": (255, 255, 255),
-            "blue":  (219, 142, 67),
-            "red":   (0, 0, 255),
-        }
-        return mapping.get(self.bg_var.get(), (255, 255, 255))
-
-    def _on_bg_change(self):
-        if self.bg_var.get() == "image":
-            self.bg_image_btn.config(state="normal")
-        else:
-            self.bg_image_btn.config(state="disabled")
-
-        self._save_bg_config()
-
-        if self.processed_image is not None:
-            self.start_process()
-
     def _on_size_change(self):
-        self._save_bg_config()
+        self._save_size_config()
         if self.processed_image is not None:
             self.start_process()
 
@@ -1708,7 +1680,9 @@ class PhotoIDApp:
         if not save_path:
             return
         try:
-            cv2.imwrite(save_path, self.processed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not imwrite_unicode(save_path, self.processed_image,
+                                   [cv2.IMWRITE_JPEG_QUALITY, 95]):
+                raise RuntimeError("写入失败")
             self.show_info(f"照片已保存至：\n{save_path}")
         except Exception as e:
             self.show_error(f"保存失败：{e}")
@@ -2052,7 +2026,7 @@ class PhotoIDApp:
 
     @staticmethod
     def _encode_image_file_base64(image_path, quality=92):
-        img = cv2.imread(image_path)
+        img = imread_unicode(image_path)
         if img is None:
             raise RuntimeError(f"无法读取图片：{image_path}")
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
@@ -2065,8 +2039,8 @@ class PhotoIDApp:
         if not self.face_path:
             self.show_error("请先选择人脸照片")
             return
-        if self.bg_var.get() == "image" and not self.bg_image_path:
-            self.show_error("请先选择自定义背景图")
+        if not os.path.exists(DEFAULT_BG_IMAGE):
+            self.show_error(f"内置背景图缺失：{DEFAULT_BG_IMAGE}")
             return
 
         self.set_btn(self.start_btn, state="disabled", text="处理中...")
@@ -2147,7 +2121,7 @@ class PhotoIDApp:
         canvas[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
 
     def _prepare_bg_image(self, bg_path, target_w, target_h):
-        bg = cv2.imread(bg_path)
+        bg = imread_unicode(bg_path)
         if bg is None:
             return None
         bh, bw = bg.shape[:2]
@@ -2160,20 +2134,16 @@ class PhotoIDApp:
         return bg[y1:y1 + target_h, x1:x1 + target_w].copy()
 
     def _make_id_photo(self, image_path):
-        image = cv2.imread(image_path)
+        image = imread_unicode(image_path)
         if image is None:
             return None
 
         target_w, target_h = STANDARD_SIZES[self.size_var.get()]
 
-        if self.bg_var.get() == "image":
-            canvas = self._prepare_bg_image(self.bg_image_path, target_w, target_h)
-            if canvas is None:
-                self.show_error("无法读取背景图")
-                return None
-        else:
-            bg_color = self._get_bg_color()
-            canvas = np.full((target_h, target_w, 3), bg_color, dtype=np.uint8)
+        canvas = self._prepare_bg_image(DEFAULT_BG_IMAGE, target_w, target_h)
+        if canvas is None:
+            self.show_error("无法读取内置背景图")
+            return None
 
         face_bbox = self._detect_face(image)
         if face_bbox is None:
@@ -2182,7 +2152,7 @@ class PhotoIDApp:
         fx, fy, fw, fh = face_bbox
 
         if self.segmenter is None:
-            self.segmenter = mp.mp_selfie_segmentation.SelfieSegmentation(
+            self.segmenter = self.mp_selfie_segmentation.SelfieSegmentation(
                 model_selection=1
             )
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -2196,33 +2166,48 @@ class PhotoIDApp:
         b, g, r = cv2.split(image)
         fg_rgba = cv2.merge([b, g, r, alpha])
 
-        scale_by_height = (target_h * HEAD_HEIGHT_RATIO) / (fh * HAIR_HEIGHT_FACTOR)
-        scale_by_width = (target_w * HEAD_WIDTH_RATIO) / (fw * HAIR_WIDTH_FACTOR)
-        scale = min(scale_by_height, scale_by_width)
+        # 人像在 mask 中的实际上下边界（按每行不透明像素量过滤零散噪点）
+        src_h, src_w = image.shape[:2]
+        row_counts = (mask > 0.5).sum(axis=1)
+        rows = np.where(row_counts > max(2, src_w * 0.02))[0]
+        if len(rows) == 0:
+            return None
+        person_top = int(rows[0])
+        person_bottom = int(rows[-1])
+        person_span = max(1, person_bottom - person_top)
 
-        new_w = int(image.shape[1] * scale)
-        new_h = int(image.shape[0] * scale)
+        # 1) 优先让人像从距顶 HEAD_TOP_MARGIN 处一直铺到照片底边（肩部紧贴下边缘）
+        scale_fill = (target_h * (1.0 - HEAD_TOP_MARGIN)) / person_span
+        # 2) 兜底：近景大脸照不能被放大到头部超出画面
+        scale_cap_h = (target_h * MAX_HEAD_HEIGHT_RATIO) / (fh * HAIR_HEIGHT_FACTOR)
+        scale_cap_w = (target_w * MAX_HEAD_WIDTH_RATIO) / (fw * HAIR_WIDTH_FACTOR)
+        scale = min(scale_fill, scale_cap_h, scale_cap_w)
+
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
         resized_fg = cv2.resize(fg_rgba, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
-        scaled_fx = fx * scale
-        scaled_fy = fy * scale
-        scaled_fw = fw * scale
-        scaled_fh = fh * scale
-        scaled_face_cx = scaled_fx + scaled_fw / 2
-        scaled_face_cy = scaled_fy + scaled_fh / 2
+        # 水平仍以人脸中心居中；垂直以人像顶部留白锚定，底边自然落到照片下边缘
+        scaled_face_cx = (fx + fw / 2) * scale
+        paste_x = int(target_w / 2 - scaled_face_cx)
+        paste_y = int(target_h * HEAD_TOP_MARGIN - person_top * scale)
 
-        target_cx = target_w / 2
-        target_cy = target_h * FACE_CENTER_Y_RATIO
-
-        paste_x = int(target_cx - scaled_face_cx)
-        paste_y = int(target_cy - scaled_face_cy)
+        log.info(
+            f"[_make_id_photo] 人像范围 {person_top}-{person_bottom}/{src_h}，"
+            f"scale={scale*src_h/target_h:.3f}*H图/H照，"
+            f"粘贴=({paste_x},{paste_y})，前景尺寸={new_w}x{new_h}"
+        )
 
         self._alpha_composite(canvas, resized_fg, paste_x, paste_y)
         return canvas
 
     # ==================== 身份证识别 ====================
     def _recognize_id_card(self, image_path):
-        result = self.ocr_engine.ocr(image_path, cls=True)
+        # 先自行解码，避免 PaddleOCR 内部 cv2.imread 在中文路径上失败
+        img_bgr = imread_unicode(image_path)
+        if img_bgr is None:
+            raise RuntimeError(f"无法读取图片：{image_path}")
+        result = self.ocr_engine.ocr(img_bgr, cls=True)
 
         items = []
         if result and result[0]:
