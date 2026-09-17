@@ -1342,7 +1342,6 @@ class PhotoIDApp:
                                                 use_angle_cls=True,
                                                 lang="ch",
                                                 show_log=False,
-                                                enable_mkldnn=False,   # 关键：禁用 oneDNN，绕过 PIR 兼容性 Bug
                                             )
                 self.set_status("就绪")
                 self.set_btn(self.start_btn, state="normal")

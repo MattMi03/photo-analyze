@@ -43,8 +43,8 @@ jobs:
           :: 人脸检测 / 分割
           pip install mediapipe==0.10.21
 
-          :: PaddleOCR（对齐 Mac：用 paddlepaddle 3.x，避免 protobuf 冲突）
-          pip install paddlepaddle==3.3.1
+          :: PaddleOCR（降级到 3.2.1，避开 3.3.x 的 OneDNN/PIR 兼容性 Bug）
+          pip install paddlepaddle==3.2.1
           pip install paddleocr==2.10.0
 
           :: InsightFace（onnx 会拉高 protobuf，装完要回滚）
@@ -95,6 +95,17 @@ jobs:
           Remove-Item models\buffalo_l.zip
           Get-ChildItem models\buffalo_l
 
+      - name: Clean PaddleOCR model cache
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:USERPROFILE ".paddleocr"
+          if (Test-Path $cache) {
+            Write-Host "清理旧模型缓存: $cache"
+            Remove-Item -Recurse -Force $cache
+          } else {
+            Write-Host "模型缓存目录不存在，跳过"
+          }
+          
       - name: Download PaddleOCR models
         shell: pwsh
         run: |
