@@ -57,7 +57,7 @@ jobs:
           name: PhotoIDClient-Windows
           path: photo-processing-service/dist/PhotoIDClient.exe
 
-  # ==================== 服务端：Docker 镜像（Linux amd64，含全部 ML 模型） ====================
+  # ==================== 服务端：Docker 镜像（Linux ARM64，含全部 ML 模型） ====================
   build-docker:
     runs-on: ubuntu-latest
 
@@ -65,12 +65,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      - name: Build Docker image (linux/arm64)
         run: |
-          docker build -t photo-processing-service:latest .
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -t photo-processing-service:latest .
 
       - name: Export image as tar
         run: |
@@ -80,7 +86,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: photo-processing-service-docker
+          name: photo-processing-service-docker-arm64
           path: photo-processing-service/photo-processing-service.tar
           compression-level: 0
 
@@ -101,5 +107,5 @@ jobs:
         with:
           files: |
             artifacts/PhotoIDClient-Windows/PhotoIDClient.exe
-            artifacts/photo-processing-service-docker/photo-processing-service.tar
+            artifacts/photo-processing-service-docker-arm64/photo-processing-service.tar
           generate_release_notes: true

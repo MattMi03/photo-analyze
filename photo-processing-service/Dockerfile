@@ -1,12 +1,17 @@
 # 证件照图像处理服务 (photo-processing-service)
-# Linux 部署镜像，含全部 ML 模型（MediaPipe / PaddleOCR / InsightFace buffalo_l）
+# Linux ARM64 部署镜像，含全部 ML 模型（MediaPipe / PaddleOCR / InsightFace buffalo_l）
 # 构建：docker build -t photo-processing-service .
 # 运行：docker run -d -p 10006:10006 --name photo-processing photo-processing-service
 
 FROM python:3.11-slim
 
-# 系统依赖：opencv 需要 libgl/libglib，paddle/onnx 需要 libgomp
+# 系统依赖：
+#   libgl1 / libglib2.0-0  -> opencv 运行时
+#   libgomp1               -> paddle / onnxruntime 运行时
+#   build-essential        -> insightface 源码编译需要 g++
+#   wget / unzip           -> 下载并解压 buffalo_l 模型
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
@@ -16,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 先拷贝依赖清单，利用 Docker 缓存
+# 先拷贝依赖清单，利用 Docker 层缓存
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
