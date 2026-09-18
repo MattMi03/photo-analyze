@@ -70,7 +70,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t photo-processing-service:latest ./photo-processing-service
+          docker build -t photo-processing-service:latest .
 
       - name: Export image as tar
         run: |
@@ -81,7 +81,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-processing-service-docker
-          path: photo-processing-service.tar
+          path: photo-processing-service/photo-processing-service.tar
           compression-level: 0
 
   # ==================== 发版 ====================
