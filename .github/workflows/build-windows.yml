@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Release Artifacts
 
 on:
   push:
@@ -6,8 +6,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
+defaults:
+  run:
+    working-directory: photo-processing-service
+
 jobs:
-  build-windows:
+  # ==================== 客户端：Windows exe（轻量 GUI，调用 Java 后端） ====================
+  build-client:
     runs-on: windows-latest
 
     steps:
@@ -19,149 +24,82 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v2-${{ hashFiles('**/*.py') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-v2-
-
       - name: Install dependencies
         shell: cmd
         run: |
           python -m pip install --upgrade pip
-
-          :: 基础工具
           pip install pyinstaller
-
-          :: 图像处理
-          pip install opencv-python==4.11.0.86
-          pip install numpy==1.26.4
-          pip install pillow
-
-          :: 人脸检测 / 分割
-          pip install mediapipe==0.10.21
-
-          :: PaddleOCR（降级到 3.2.1，避开 3.3.x 的 OneDNN/PIR 兼容性 Bug）
-          pip install paddlepaddle==3.2.1
-          pip install paddleocr==2.10.0
-
-          :: InsightFace（onnx 会拉高 protobuf，装完要回滚）
-          pip install insightface==0.7.3
-          pip install onnxruntime==1.19.2
-
-          :: 网络
-          pip install requests urllib3
-
-          :: 最后强制统一 protobuf 到 mediapipe 兼容区间（4.25.3 ~ 5）
-          pip install "protobuf>=4.25.3,<5"
-
-          :: 打印关键版本用于排查
-          pip list | findstr /I "protobuf paddle mediapipe insightface onnx"
+          pip install -r client_requirements.txt
 
       - name: Verify imports
         run: |
-          python -c "import cv2, mediapipe, numpy; print('cv2', cv2.__version__); print('numpy', numpy.__version__)"
-          python -c "import paddle; print('paddle', paddle.__version__)"
-          python -c "import paddleocr; print('paddleocr OK')"
-          python -c "import insightface; print('insightface OK')"
-          python -c "import onnxruntime; print('onnxruntime', onnxruntime.__version__)"
+          python -c "import cv2, numpy, PIL, requests; print('client deps OK')"
 
-      - name: Download InsightFace buffalo_l model
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path models\buffalo_l | Out-Null
-          $urls = @(
-            "https://ghfast.top/https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip",
-            "https://gh-proxy.com/https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip",
-            "https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip"
-          )
-          $ok = $false
-          foreach ($u in $urls) {
-            Write-Host "尝试下载: $u"
-            try {
-              Invoke-WebRequest -Uri $u -OutFile models\buffalo_l.zip -TimeoutSec 300
-              if ((Get-Item models\buffalo_l.zip).Length -gt 1000000) {
-                $ok = $true
-                break
-              }
-            } catch {
-              Write-Host "失败: $_"
-            }
-          }
-          if (-not $ok) { throw "所有镜像下载均失败" }
-          Expand-Archive -Path models\buffalo_l.zip -DestinationPath models\buffalo_l -Force
-          Remove-Item models\buffalo_l.zip
-          Get-ChildItem models\buffalo_l
-
-      - name: Clean PaddleOCR model cache
-        shell: pwsh
-        run: |
-          $cache = Join-Path $env:USERPROFILE ".paddleocr"
-          if (Test-Path $cache) {
-            Write-Host "清理旧模型缓存: $cache"
-            Remove-Item -Recurse -Force $cache
-          } else {
-            Write-Host "模型缓存目录不存在，跳过"
-          }
-          
-      - name: Download PaddleOCR models
-        shell: pwsh
-        run: |
-          # 触发下载，模型会落到 $env:USERPROFILE\.paddleocr
-          python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)"
-
-          # 检查是否下载成功
-          $src = Join-Path $env:USERPROFILE ".paddleocr"
-          if (-not (Test-Path $src)) { throw "PaddleOCR 模型下载失败：$src 不存在" }
-          Get-ChildItem -Recurse $src | Select-Object FullName
-
-          # 拷贝到项目目录，供 PyInstaller 打包
-          Remove-Item -Recurse -Force paddleocr_models -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path paddleocr_models | Out-Null
-          Copy-Item -Recurse -Force "$src\*" paddleocr_models\
-          Get-ChildItem -Recurse paddleocr_models | Select-Object FullName
-          
-      - name: Build with PyInstaller
+      - name: Build PhotoIDClient.exe
         shell: cmd
         run: |
-            pyinstaller --onefile --windowed --name "PhotoIDTool" ^
-            --add-data "models;models" ^
-            --add-data "paddleocr_models;paddleocr_models" ^
+            pyinstaller --onefile --windowed --name "PhotoIDClient" ^
             --add-data "assets;assets" ^
-            --collect-all paddleocr ^
-            --collect-all paddle ^
-            --collect-all pyclipper ^
-            --collect-all skimage ^
-            --collect-all imgaug ^
-            --collect-all lmdb ^
-            --collect-all insightface ^
-            --collect-all onnxruntime ^
-            --collect-all mediapipe ^
-            --hidden-import=mediapipe ^
             --hidden-import=cv2 ^
             --hidden-import=PIL ^
             --hidden-import=PIL._tkinter_finder ^
-            --hidden-import=scipy.special ^
-            --hidden-import=scipy._lib.messagestream ^
-            --hidden-import=urllib3 ^
+            --hidden-import=PIL.ImageTk ^
             --hidden-import=requests ^
+            --hidden-import=urllib3 ^
             --hidden-import=charset_normalizer ^
             --hidden-import=idna ^
             --hidden-import=certifi ^
-            --hidden-import=google.protobuf ^
-            main.py
+            client_app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PhotoIDTool-Windows
-          path: dist/PhotoIDTool.exe
+          name: PhotoIDClient-Windows
+          path: photo-processing-service/dist/PhotoIDClient.exe
+
+  # ==================== 服务端：Docker 镜像（Linux amd64，含全部 ML 模型） ====================
+  build-docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t photo-processing-service:latest ./photo-processing-service
+
+      - name: Export image as tar
+        run: |
+          docker save photo-processing-service:latest -o photo-processing-service.tar
+          ls -lh photo-processing-service.tar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-processing-service-docker
+          path: photo-processing-service.tar
+          compression-level: 0
+
+  # ==================== 发版 ====================
+  release:
+    needs: [build-client, build-docker]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PhotoIDTool.exe
+          files: |
+            artifacts/PhotoIDClient-Windows/PhotoIDClient.exe
+            artifacts/photo-processing-service-docker/photo-processing-service.tar
           generate_release_notes: true
