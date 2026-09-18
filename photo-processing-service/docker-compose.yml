@@ -1,0 +1,28 @@
+# 证件照图像处理服务 (photo-processing-service) 单机部署
+# 启动：docker compose up -d
+# 查看日志：docker compose logs -f photo-processing
+# 停止：docker compose down
+
+services:
+  photo-processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: photo-processing-service:latest
+    container_name: photo-processing
+    restart: unless-stopped
+    ports:
+      - "10006:10006"
+    environment:
+      - TZ=Asia/Shanghai
+    # ML 推理较吃内存，按需调整
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10006/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3

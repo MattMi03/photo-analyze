@@ -1,0 +1,24 @@
+# 服务端依赖（与 .github/workflows/build-windows.yml 保持一致）
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+
+opencv-python==4.11.0.86
+numpy==1.26.4
+pillow==10.4.0
+
+# 人脸检测 / 分割
+mediapipe==0.10.21
+
+# PaddleOCR（2.10.0 避开 3.3.x 的 OneDNN/PIR 兼容性 Bug）
+paddlepaddle==3.2.1
+paddleocr==2.10.0
+
+# InsightFace（onnx 会拉高 protobuf，装完需回滚到 mediapipe 兼容区间）
+insightface==0.7.3
+onnxruntime==1.19.2
+protobuf>=4.25.3,<5
+
+# 网络
+requests
+urllib3

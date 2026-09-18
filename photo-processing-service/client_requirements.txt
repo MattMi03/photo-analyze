@@ -1,0 +1,9 @@
+# 客户端依赖（轻量，不包含 ML 模型）
+opencv-python==4.11.0.86
+numpy==1.26.4
+pillow==10.4.0
+requests
+urllib3
+
+# 打包工具（仅打包时需要）
+pyinstaller
