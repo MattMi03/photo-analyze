@@ -189,8 +189,10 @@ class ServerClient:
         log.info(f"[Java] POST {url} (timeout={timeout}s)")
         resp = requests.post(url, json=payload, headers=self._headers(),   # ← 加 headers
                              timeout=timeout, verify=False)
-        ...
+        log.info(f"[Java] 响应完整内容(HTTP {resp.status_code}):\n{resp.text}")
         body = resp.json()
+        if resp.status_code == 200 and str(body.get("code")) == "200":
+            return body.get("data") or {}
         msg = body.get("msg") or f"服务调用失败(HTTP {resp.status_code})"
         log.warning(f"[Java] 业务失败: code={body.get('code')}, msg={msg}")
         if "未登录" in msg or "Token" in msg:
@@ -202,6 +204,7 @@ class ServerClient:
         log.info(f"[Java] GET {url}")
         try:
             resp = requests.get(url, headers=self._headers(), timeout=5, verify=False)  # ← 加 headers
+            log.info(f"[Java] 健康检查响应完整内容(HTTP {resp.status_code}):\n{resp.text}")
             body = resp.json()
             if resp.status_code == 200 and str(body.get("code")) == "200":
                 return True, "已连接"
@@ -262,6 +265,7 @@ class ApiClient:
         try:
             resp = requests.post(url, json=payload, verify=False, timeout=30)
             log.info(f"[登录] 收到响应 HTTP {resp.status_code} (耗时 {resp.elapsed.total_seconds():.2f}s)")
+            log.info(f"[登录] 响应完整内容:\n{resp.text}")
         except requests.exceptions.ConnectTimeout as e:
             log.error(f"[登录] 连接超时：{e}")
             return False, f"连接超时（30秒）：{e}"
@@ -320,6 +324,7 @@ class ApiClient:
             url, headers=self._headers(with_auth=True), params={"sfzjh": sfzjh},
             verify=False, timeout=30,
         )
+        log.info(f"[云端] 特征提取响应完整内容(HTTP {resp.status_code}):\n{resp.text}")
         try:
             body = resp.json()
         except ValueError:
@@ -331,6 +336,7 @@ class ApiClient:
 
     @staticmethod
     def _parse_result(resp, err_prefix):
+        log.info(f"[云端] 响应完整内容(HTTP {resp.status_code}):\n{resp.text}")
         try:
             body = resp.json()
         except ValueError:
@@ -1550,6 +1556,9 @@ class PhotoIDApp:
             self.identity_btn.config(state="disabled")
             self.face_submit_btn.config(state="disabled")
 
+        # 抠图换背景：只要有人脸照片即可，不依赖 ksbs
+        self.start_btn.config(state="normal" if self.face_path else "disabled")
+
     def _reset_for_next(self):
         self.face_path = None
         self.id_path = None
@@ -1710,13 +1719,14 @@ class PhotoIDApp:
                 return
 
         xm = self._get_field("name")
+        ksbs_display = self.identity_ksbs or "（未上传考籍）"
         face_name = os.path.basename(self.face_path or "")
         warn = ""
         if self.identity_mismatched:
             warn = "\n⚠ 与考籍不一致字段：" + "、".join(self.identity_mismatched) + "\n"
         sim_line = f"\n人脸相似度：{sim*100:.1f}%\n"
         confirm = ("提交前请最后核对（人脸照片将绑定到以下考生）：\n\n"
-                   f"考生 ksbs：{self.identity_ksbs}\n姓名：{xm}\n身份证号：{sfzjh}\n"
+                   f"考生 ksbs：{ksbs_display}\n姓名：{xm}\n身份证号：{sfzjh}\n"
                    f"人脸照片文件：{face_name}" + sim_line + warn +
                    "\n确认是同一个人，再点“是”提交。")
         if not messagebox.askyesno("提交前最后核对", confirm, icon="warning"):
@@ -1752,7 +1762,7 @@ class PhotoIDApp:
 
                 sim_line2 = f"人脸相似度：{sim*100:.1f}%\n" if sim is not None else ""
                 summary = ("提交成功！\n\n"
-                           f"考生 ksbs：{self.identity_ksbs}\n姓名：{xm}\n身份证号：{sfzjh}\n"
+                           f"考生 ksbs：{ksbs_display}\n姓名：{xm}\n身份证号：{sfzjh}\n"
                            + sim_line2 +
                            "证件照：已上传\n"
                            f"人脸特征任务：{extract_msg}\n\n"
