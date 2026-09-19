@@ -169,45 +169,46 @@ def encode_pil_base64(pil_rgb, quality=92):
 
 # ==================== 图像处理服务客户端（调用 Java 后端） ====================
 class ServerClient:
-    """Java 后端 student-affair-service HTTP 客户端（图像处理接口经 Java 转发 Python 服务）"""
-
     def __init__(self, base_url):
         self.base = (base_url or DEFAULT_SERVER_URL).strip().rstrip("/")
-        # 本地直连 Java（无 nginx）用 /api 前缀；生产经 nginx 用 /admin/apistudentaffair 前缀
+        self.token = ""                      # ← 新增，登录成功后同步
         lowered = self.base.lower()
         if "localhost" in lowered or "127.0.0.1" in lowered:
             self._prefix = "/api/admin/photo"
         else:
             self._prefix = "/admin/apistudentaffair/admin/photo"
 
+    def _headers(self):                      # ← 新增
+        h = {"Content-Type": "application/json"}
+        if self.token:
+            h["Authorization"] = f"Bearer {self.token}"
+        return h
+
     def _post(self, path, payload, timeout=120):
         url = self.base + self._prefix + path
         log.info(f"[Java] POST {url} (timeout={timeout}s)")
-        resp = requests.post(url, json=payload, timeout=timeout, verify=False)
-        log.info(f"[Java] 响应 HTTP {resp.status_code} (耗时 {resp.elapsed.total_seconds():.2f}s)")
-        try:
-            body = resp.json()
-        except ValueError:
-            log.error(f"[Java] 响应非 JSON，内容前200字符: {resp.text[:200]}")
-            raise RuntimeError(f"服务返回非 JSON(HTTP {resp.status_code})")
-        if resp.status_code == 200 and str(body.get("code")) == "200":
-            log.info(f"[Java] 成功: msg={body.get('msg')}")
-            return body.get("data") or {}
-        log.warning(f"[Java] 业务失败: code={body.get('code')}, msg={body.get('msg')}")
-        raise RuntimeError(body.get("msg") or f"服务调用失败(HTTP {resp.status_code})")
+        resp = requests.post(url, json=payload, headers=self._headers(),   # ← 加 headers
+                             timeout=timeout, verify=False)
+        ...
+        body = resp.json()
+        msg = body.get("msg") or f"服务调用失败(HTTP {resp.status_code})"
+        log.warning(f"[Java] 业务失败: code={body.get('code')}, msg={msg}")
+        if "未登录" in msg or "Token" in msg:
+            raise RuntimeError("登录已失效，请重新登录")
+        raise RuntimeError(msg)
 
     def ping(self):
-        """健康检查：调用 Java 后端 /health，返回 (ok, info_msg)"""
         url = self.base + self._prefix + "/health"
         log.info(f"[Java] GET {url}")
         try:
-            resp = requests.get(url, timeout=5, verify=False)
+            resp = requests.get(url, headers=self._headers(), timeout=5, verify=False)  # ← 加 headers
             body = resp.json()
             if resp.status_code == 200 and str(body.get("code")) == "200":
-                log.info("[Java] 健康检查通过")
                 return True, "已连接"
-            log.warning(f"[Java] 健康检查失败: {body.get('msg')}")
-            return False, body.get("msg") or "服务异常"
+            msg = body.get("msg") or "服务异常"
+            if "未登录" in msg or "Token" in msg:
+                return False, "需登录"        # ← 区分"未登录"和"未连接"
+            return False, msg
         except Exception as e:
             log.warning(f"[Java] 健康检查异常: {e}")
             return False, "未连接"
@@ -960,6 +961,8 @@ class PhotoIDApp:
                         self._update_flow()
                 elif kind == "login_done":
                     dialog, ok, msg, base_url, username, password = payload
+                    if ok:
+                        self.server.token = self.api_client.token   # ← 关键一行
                     try:
                         if dialog.winfo_exists():
                             dialog._done(ok, msg, base_url, username, password)
